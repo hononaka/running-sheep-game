@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>羊のジャンプゲーム</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #222;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #fff;
+            font-family: sans-serif;
+            overflow: hidden;
+        }
+        canvas {
+            background-color: #7ec0ee; /* 空の色 */
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas" width="800" height="400"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// ゲームの状態
+let gameState = 'START'; // 'START', 'PLAYING', 'GAME_OVER'
+let score = 0;
+let gameSpeed = 4;
+
+// 羊（プレイヤー）のオブジェクト
+const sheep = {
+    x: 100,
+    y: 300,
+    width: 40,
+    height: 40,
+    vy: 0,
+    gravity: 0.6,
+    jumpPower: -11,
+    isJumping: false,
+
+    draw() {
+        // 羊の体（簡易的に四角と丸で表現）
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+        // 頭
+        ctx.fillStyle = '#dddddd';
+        ctx.fillRect(this.x + 25, this.y - 10, 20, 20);
+    },
+
+    update() {
+        this.vy += this.gravity;
+        this.y += this.vy;
+
+        // 地面についた判定
+        const groundLevel = 300;
+        if (this.y > groundLevel) {
+            this.y = groundLevel;
+            this.vy = 0;
+            this.isJumping = false;
+        }
+    },
+
+    jump() {
+        if (!this.isJumping) {
+            this.vy = this.jumpPower;
+            this.isJumping = true;
+        }
+    }
+};
+
+// 障害物（柵）の配列
+let obstacles = [];
+let obstacleTimer = 0;
+let nextSpawnInterval = 100; // 次の柵が出るまでのフレーム数
+
+function spawnObstacle() {
+    obstacles.push({
+        x: canvas.width,
+        y: 310,
+        width: 20,
+        height: 30,
+        draw() {
+            // 柵の描画（木の色）
+            ctx.fillStyle = '#8B4513';
+            ctx.fillRect(this.x, this.y, this.width, this.height);
+            // 柵の横棒
+            ctx.fillRect(this.x - 5, this.y + 10, 30, 5);
+        }
+    });
+}
+
+// キー入力の処理
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'Enter') {
+        if (gameState === 'START' || gameState === 'GAME_OVER') {
+            resetGame();
+            gameState = 'PLAYING';
+        } else if (gameState === 'PLAYING') {
+            sheep.jump();
+        }
+    }
+});
+
+function resetGame() {
+    sheep.y = 300;
+    sheep.vy = 0;
+    sheep.isJumping = false;
+    obstacles = [];
+    score = 0;
+    gameSpeed = 4;
+    obstacleTimer = 0;
+    nextSpawnInterval = 100;
+}
+
+// 当たり判定（矩形同士の判定）
+function checkCollision(rect1, rect2) {
+    // 少し当たり判定を甘くするためにマージンをとる
+    const margin = 5;
+    return (
+        rect1.x + margin < rect2.x + rect2.width &&
+        rect1.x + rect1.width - margin > rect2.x &&
+        rect1.y + margin < rect2.y + rect2.height &&
+        rect1.y + rect1.height > rect2.y
+    );
+}
+
+// メインループ
+function loop() {
+    // 画面のクリア
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 地面の描画
+    ctx.fillStyle = '#558b2f';
+    ctx.fillRect(0, 340, canvas.width, 60);
+
+    if (gameState === 'START') {
+        // スタート画面の表示
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '24px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('エンターキーを押してスタート', canvas.width / 2, canvas.height / 2);
+        ctx.font = '16px sans-serif';
+        ctx.fillText('操作: Enterキー でジャンプ', canvas.width / 2, canvas.height / 2 + 40);
+
+    } else if (gameState === 'PLAYING') {
+        // スピードをだんだん上げる（時間経過とともに加速）
+        gameSpeed += 0.001;
+
+        // スコア加算
+        score += 1;
+
+        // 羊の更新と描画
+        sheep.update();
+        sheep.draw();
+
+        // 障害物の生成管理
+        obstacleTimer++;
+        if (obstacleTimer >= nextSpawnInterval) {
+            spawnObstacle();
+            obstacleTimer = 0;
+            // 次に柵が出る間隔をランダムに調整（スピードに合わせて少し狭まる）
+            nextSpawnInterval = Math.floor(Math.random() * 60) + Math.max(50, 120 - Math.floor(gameSpeed * 5));
+        }
+
+        // 障害物の更新と描画
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+            obstacles[i].x -= gameSpeed;
+            obstacles[i].draw();
+
+            // 当たり判定
+            if (checkCollision(sheep, obstacles[i])) {
+                gameState = 'GAME_OVER';
+            }
+
+            // 画面外に出た障害物を配列から削除
+            if (obstacles[i].x + obstacles[i].width < 0) {
+                obstacles.splice(i, 1);
+            }
+        }
+
+        // スコアの表示
+        ctx.fillStyle = '#000000';
+        ctx.font = '20px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(`スコア: ${Math.floor(score / 10)}`, 20, 30);
+        ctx.fillText(`スピード: ${gameSpeed.toFixed(1)}`, 20, 60);
+
+    } else if (gameState === 'GAME_OVER') {
+        // 障害物と羊をその場で停止表示
+        sheep.draw();
+        obstacles.forEach(obs => obs.draw());
+
+        // ゲームオーバー画面の表示
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '32px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('ゲームオーバー', canvas.width / 2, canvas.height / 2 - 20);
+        
+        ctx.font = '20px sans-serif';
+        ctx.fillText(`スコア: ${Math.floor(score / 10)}`, canvas.width / 2, canvas.height / 2 + 20);
+        
+        ctx.font = '16px sans-serif';
+        ctx.fillText('もう一度プレイするには Enterキー を押してください', canvas.width / 2, canvas.height / 2 + 60);
+    }
+
+    requestAnimationFrame(loop);
+}
+
+// ループの開始
+loop();
+</script>
+
+</body>
+</html>

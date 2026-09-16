@@ -2,66 +2,98 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>羊のジャンプゲーム</title>
+    <title>はしる羊</title>
     <style>
         body {
             margin: 0;
-            background-color: #222;
+            background-color: #1a1a1e;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
             color: #fff;
-            font-family: sans-serif;
+            font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
             overflow: hidden;
         }
         canvas {
-            background-color: #7ec0ee; /* 空の色 */
-            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            background-color: #7ec0ee;
+            box-shadow: 0 0 24px rgba(0, 0, 0, 0.45);
+            border-radius: 8px;
+            max-width: min(800px, 96vw);
+            height: auto;
         }
     </style>
 </head>
 <body>
-
-<canvas id="gameCanvas" width="800" height="400"></canvas>
-
+<canvas id="gameCanvas" width="800" height="400" tabindex="0"></canvas>
 <script>
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-// ゲームの状態
-let gameState = 'START'; // 'START', 'PLAYING', 'GAME_OVER'
-let score = 0;
-let gameSpeed = 4;
+const GROUND_Y = 340;
+const CLEAR_GOAL = 50;
+const MAX_LIVES = 2;
+const SHEEP_GROUND_Y = GROUND_Y - 46;
 
-// 羊（プレイヤー）のオブジェクト
+let gameState = 'START';
+let lives = 1; // 藁で最大2まで増える
+let passedObstacles = 0;
+let gameSpeed = 4.2;
+let frame = 0;
+let invincibleUntil = 0;
+let obstacleTimer = 0;
+let nextObstacleInterval = 110;
+let hayTimer = 0;
+let nextHayInterval = 140;
+let obstacles = [];
+let hays = [];
+let clouds = [];
+let hills = [];
+let particles = [];
+let clearAnim = 0;
+let lastHitId = null;
+
+for (let i = 0; i < 5; i++) {
+    clouds.push({
+        x: Math.random() * 800,
+        y: 30 + Math.random() * 80,
+        s: 0.4 + Math.random() * 0.5,
+        w: 50 + Math.random() * 40
+    });
+}
+for (let i = 0; i < 4; i++) {
+    hills.push({
+        x: i * 280,
+        w: 220 + Math.random() * 80,
+        h: 50 + Math.random() * 30
+    });
+}
+
 const sheep = {
-    x: 100,
-    y: 300,
-    width: 40,
-    height: 40,
+    x: 110,
+    y: SHEEP_GROUND_Y,
+    width: 52,
+    height: 46,
     vy: 0,
-    gravity: 0.6,
-    jumpPower: -11,
+    gravity: 0.62,
+    jumpPower: -12.2,
     isJumping: false,
+    facing: 1,
 
-    draw() {
-        // 羊の体（簡易的に四角と丸で表現）
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(this.x, this.y, this.width, this.height);
-        // 頭
-        ctx.fillStyle = '#dddddd';
-        ctx.fillRect(this.x + 25, this.y - 10, 20, 20);
+    hitbox() {
+        return {
+            x: this.x + 8,
+            y: this.y + 8,
+            width: this.width - 16,
+            height: this.height - 10
+        };
     },
 
     update() {
         this.vy += this.gravity;
         this.y += this.vy;
-
-        // 地面についた判定
-        const groundLevel = 300;
-        if (this.y > groundLevel) {
-            this.y = groundLevel;
+        if (this.y >= SHEEP_GROUND_Y) {
+            this.y = SHEEP_GROUND_Y;
             this.vy = 0;
             this.isJumping = false;
         }
@@ -75,150 +107,556 @@ const sheep = {
     }
 };
 
-// 障害物（柵）の配列
-let obstacles = [];
-let obstacleTimer = 0;
-let nextSpawnInterval = 100; // 次の柵が出るまでのフレーム数
-
-function spawnObstacle() {
-    obstacles.push({
-        x: canvas.width,
-        y: 310,
-        width: 20,
-        height: 30,
-        draw() {
-            // 柵の描画（木の色）
-            ctx.fillStyle = '#8B4513';
-            ctx.fillRect(this.x, this.y, this.width, this.height);
-            // 柵の横棒
-            ctx.fillRect(this.x - 5, this.y + 10, 30, 5);
-        }
-    });
-}
-
-// キー入力の処理
-window.addEventListener('keydown', (e) => {
-    if (e.code === 'Enter') {
-        if (gameState === 'START' || gameState === 'GAME_OVER') {
-            resetGame();
-            gameState = 'PLAYING';
-        } else if (gameState === 'PLAYING') {
-            sheep.jump();
-        }
-    }
-});
-
 function resetGame() {
-    sheep.y = 300;
+    sheep.y = SHEEP_GROUND_Y;
     sheep.vy = 0;
     sheep.isJumping = false;
-    obstacles = [];
-    score = 0;
-    gameSpeed = 4;
+    lives = 1;
+    passedObstacles = 0;
+    gameSpeed = 4.2;
+    frame = 0;
+    invincibleUntil = 0;
     obstacleTimer = 0;
-    nextSpawnInterval = 100;
+    nextObstacleInterval = 110;
+    hayTimer = 0;
+    nextHayInterval = 140;
+    obstacles = [];
+    hays = [];
+    particles = [];
+    clearAnim = 0;
+    lastHitId = null;
 }
 
-// 当たり判定（矩形同士の判定）
-function checkCollision(rect1, rect2) {
-    // 少し当たり判定を甘くするためにマージンをとる
-    const margin = 5;
+function rectsOverlap(a, b, margin = 0) {
     return (
-        rect1.x + margin < rect2.x + rect2.width &&
-        rect1.x + rect1.width - margin > rect2.x &&
-        rect1.y + margin < rect2.y + rect2.height &&
-        rect1.y + rect1.height > rect2.y
+        a.x + margin < b.x + b.width &&
+        a.x + a.width - margin > b.x &&
+        a.y + margin < b.y + b.height &&
+        a.y + a.height - margin > b.y
     );
 }
 
-// メインループ
-function loop() {
-    // 画面のクリア
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+function spawnObstacle() {
+    const last = obstacles[obstacles.length - 1];
+    if (last && last.x > canvas.width - 200) return;
+    const isCrow = Math.random() < 0.42;
+    if (isCrow) {
+        obstacles.push({
+            id: frame + Math.random(),
+            type: 'crow',
+            x: canvas.width + 20,
+            y: 168 + Math.random() * 36,
+            width: 38,
+            height: 24,
+            wing: 0,
+            counted: false
+        });
+    } else {
+        obstacles.push({
+            id: frame + Math.random(),
+            type: 'fence',
+            x: canvas.width + 10,
+            y: GROUND_Y - 48,
+            width: 28,
+            height: 48,
+            counted: false
+        });
+    }
+}
 
-    // 地面の描画
-    ctx.fillStyle = '#558b2f';
-    ctx.fillRect(0, 340, canvas.width, 60);
+function spawnHay() {
+    const inAir = Math.random() < 0.5;
+    const hay = {
+        x: canvas.width + 16,
+        y: inAir ? 175 + Math.random() * 50 : GROUND_Y - 28,
+        width: 26,
+        height: 18,
+        inAir
+    };
+    const tooClose = obstacles.some((o) => Math.abs(o.x - hay.x) < 90);
+    if (!tooClose) hays.push(hay);
+}
+
+function loseLife(obstacleId) {
+    if (frame < invincibleUntil) return;
+    if (lastHitId === obstacleId) return;
+    lastHitId = obstacleId;
+    lives -= 1;
+    invincibleUntil = frame + 50;
+    burst(sheep.x + 20, sheep.y + 16, '#fff');
+    if (lives <= 0) {
+        lives = 0;
+        gameState = 'GAME_OVER';
+    }
+}
+
+function burst(x, y, color) {
+    for (let i = 0; i < 8; i++) {
+        particles.push({
+            x, y,
+            vx: (Math.random() - 0.5) * 3.5,
+            vy: -Math.random() * 2.5 - 0.4,
+            life: 28,
+            color
+        });
+    }
+}
+
+window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Enter') return;
+    e.preventDefault();
+    if (gameState === 'START' || gameState === 'GAME_OVER' || gameState === 'CLEAR') {
+        resetGame();
+        gameState = 'PLAYING';
+    } else if (gameState === 'PLAYING') {
+        sheep.jump();
+    }
+});
+
+function drawSky() {
+    const g = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+    if (gameState === 'CLEAR') {
+        const t = Math.min(1, clearAnim / 80);
+        g.addColorStop(0, mix('#1a2744', '#7ec0ee', 1 - t));
+        g.addColorStop(1, mix('#3d4f7a', '#c9e8ff', 1 - t));
+    } else {
+        g.addColorStop(0, '#7ec0ee');
+        g.addColorStop(1, '#c9e8ff');
+    }
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function mix(a, b, t) {
+    const pa = hexToRgb(a);
+    const pb = hexToRgb(b);
+    const r = Math.round(pa.r + (pb.r - pa.r) * t);
+    const g = Math.round(pa.g + (pb.g - pa.g) * t);
+    const bl = Math.round(pa.b + (pb.b - pa.b) * t);
+    return `rgb(${r},${g},${bl})`;
+}
+
+function hexToRgb(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function drawBackground() {
+    const scroll = gameState === 'PLAYING' ? frame * gameSpeed * 0.15 : 0;
+    hills.forEach((h, i) => {
+        const x = ((h.x - scroll * (0.35 + i * 0.02)) % (canvas.width + 300)) - 80;
+        ctx.fillStyle = i % 2 === 0 ? '#6aa84f' : '#5c9a45';
+        ctx.beginPath();
+        ctx.ellipse(x + h.w / 2, GROUND_Y + 10, h.w / 2, h.h, 0, Math.PI, 0);
+        ctx.fill();
+    });
+
+    clouds.forEach((c) => {
+        if (gameState === 'PLAYING') c.x -= c.s;
+        if (c.x < -90) c.x = canvas.width + 40;
+        drawCloud(c.x, c.y, c.w);
+    });
+
+    ctx.fillStyle = '#6d9e3e';
+    ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
+    ctx.fillStyle = '#7cb342';
+    ctx.fillRect(0, GROUND_Y, canvas.width, 8);
+
+    const stripe = gameState === 'PLAYING' ? (frame * gameSpeed) % 40 : 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    for (let x = -stripe; x < canvas.width; x += 40) {
+        ctx.fillRect(x, GROUND_Y + 18, 18, 4);
+    }
+}
+
+function drawCloud(x, y, w) {
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.arc(x, y, w * 0.28, 0, Math.PI * 2);
+    ctx.arc(x + w * 0.28, y - 6, w * 0.32, 0, Math.PI * 2);
+    ctx.arc(x + w * 0.55, y, w * 0.26, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+function drawFence(o) {
+    ctx.fillStyle = '#8b5a2b';
+    ctx.fillRect(o.x + 4, o.y, 6, o.height);
+    ctx.fillRect(o.x + 18, o.y, 6, o.height);
+    ctx.fillStyle = '#a36a34';
+    ctx.fillRect(o.x, o.y + 8, 28, 6);
+    ctx.fillRect(o.x, o.y + 22, 28, 6);
+    ctx.fillStyle = '#6e4320';
+    ctx.fillRect(o.x + 2, o.y + 8, 24, 2);
+}
+
+function drawCrow(o) {
+    o.wing = Math.sin(frame * 0.35) * 8;
+    const x = o.x;
+    const y = o.y;
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.ellipse(x + 18, y + 14, 16, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + 18, y + 12);
+    ctx.quadraticCurveTo(x + 8, y + 4 + o.wing, x - 4, y + 10);
+    ctx.quadraticCurveTo(x + 10, y + 10, x + 18, y + 14);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + 18, y + 12);
+    ctx.quadraticCurveTo(x + 30, y + 2 - o.wing, x + 42, y + 8);
+    ctx.quadraticCurveTo(x + 28, y + 12, x + 20, y + 14);
+    ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath();
+    ctx.arc(x + 30, y + 12, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#f4a261';
+    ctx.beginPath();
+    ctx.moveTo(x + 34, y + 12);
+    ctx.lineTo(x + 42, y + 14);
+    ctx.lineTo(x + 34, y + 16);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(x + 31.5, y + 11, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+function drawHay(h) {
+    ctx.save();
+    ctx.translate(h.x + 13, h.y + 9);
+    ctx.rotate(-0.15);
+    ctx.fillStyle = '#e6c35c';
+    ctx.fillRect(-12, -7, 24, 14);
+    ctx.fillStyle = '#c9a227';
+    for (let i = -10; i <= 8; i += 5) {
+        ctx.fillRect(i, -7, 2, 14);
+    }
+    ctx.fillStyle = '#f3d56a';
+    ctx.fillRect(-12, -7, 24, 3);
+    ctx.restore();
+}
+
+function drawSheep(x, y, opts = {}) {
+    const sleeping = opts.sleeping;
+    const blink = opts.blink;
+    const run = !sheep.isJumping && !sleeping ? Math.sin(frame * 0.45) : 0;
+    ctx.save();
+    ctx.translate(x, y);
+    if (sleeping) {
+        ctx.translate(26, 28);
+        ctx.rotate(-1.2);
+        ctx.translate(-26, -22);
+    }
+    if (blink && Math.floor(frame / 4) % 2 === 0) {
+        ctx.globalAlpha = 0.35;
+    }
+
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
+    ctx.beginPath();
+    ctx.ellipse(26, 46, 18, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = '#d8d8d8';
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(14, 34);
+    ctx.lineTo(10, 44 + run * 3);
+    ctx.moveTo(22, 34);
+    ctx.lineTo(24, 44 - run * 3);
+    ctx.moveTo(34, 34);
+    ctx.lineTo(32, 44 + run * 2);
+    ctx.moveTo(42, 34);
+    ctx.lineTo(46, 44 - run * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = '#f7f7f7';
+    wool(18, 22, 12);
+    wool(30, 18, 13);
+    wool(40, 24, 11);
+    wool(24, 28, 12);
+    ctx.fillStyle = '#ececec';
+    ctx.beginPath();
+    ctx.ellipse(28, 26, 18, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#3a3a3a';
+    ctx.beginPath();
+    ctx.ellipse(48, 22, 9, 8, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#2a2a2a';
+    ctx.beginPath();
+    ctx.ellipse(44, 16, 3.2, 4.5, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(54, 17, 3.2, 4.5, 0.35, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = sleeping ? '#3a3a3a' : '#fff';
+    ctx.beginPath();
+    ctx.ellipse(51, 21, 2.2, sleeping ? 0.6 : 2.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (!sleeping) {
+        ctx.fillStyle = '#111';
+        ctx.beginPath();
+        ctx.arc(51.4, 21, 1.1, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.fillStyle = '#f4a261';
+    ctx.beginPath();
+    ctx.ellipse(57, 24, 3, 2, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+}
+
+function wool(x, y, r) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+function drawHearts() {
+    for (let i = 0; i < MAX_LIVES; i++) {
+        drawHeart(20 + i * 28, 22, i < lives);
+    }
+}
+
+function drawHeart(x, y, filled) {
+    ctx.beginPath();
+    ctx.moveTo(x, y + 6);
+    ctx.bezierCurveTo(x, y, x - 10, y, x - 10, y + 7);
+    ctx.bezierCurveTo(x - 10, y + 14, x, y + 18, x, y + 22);
+    ctx.bezierCurveTo(x, y + 18, x + 10, y + 14, x + 10, y + 7);
+    ctx.bezierCurveTo(x + 10, y, x, y, x, y + 6);
+    ctx.fillStyle = filled ? '#e53935' : 'rgba(255,255,255,0.55)';
+    ctx.fill();
+    ctx.strokeStyle = filled ? '#b71c1c' : 'rgba(80,40,40,0.35)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+}
+
+function drawHud() {
+    drawHearts();
+    ctx.fillStyle = '#14330c';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`越えた数: ${passedObstacles} / ${CLEAR_GOAL}`, 78, 36);
+    ctx.textAlign = 'right';
+    ctx.fillText(`速さ ${gameSpeed.toFixed(1)}`, canvas.width - 20, 36);
+}
+
+function drawOverlay(title, lines) {
+    const boxW = 520;
+    const boxH = 150 + lines.length * 28;
+    const boxX = (canvas.width - boxW) / 2;
+    const boxY = 88;
+    ctx.fillStyle = 'rgba(18, 28, 42, 0.72)';
+    roundRect(boxX, boxY, boxW, boxH, 16);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 34px sans-serif';
+    ctx.fillText(title, canvas.width / 2, boxY + 48);
+    ctx.font = '17px sans-serif';
+    lines.forEach((line, i) => {
+        ctx.fillText(line, canvas.width / 2, boxY + 88 + i * 28);
+    });
+}
+
+function drawFuton(x, y) {
+    ctx.fillStyle = '#c62828';
+    roundRect(x, y, 120, 22, 8);
+    ctx.fill();
+    ctx.fillStyle = '#ef9a9a';
+    roundRect(x + 8, y - 10, 104, 18, 8);
+    ctx.fill();
+    ctx.fillStyle = '#fff8e7';
+    roundRect(x + 78, y - 18, 36, 22, 10);
+    ctx.fill();
+}
+
+function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+}
+
+function drawZzz(t) {
+    ['z', 'Z', 'Z'].forEach((ch, i) => {
+        const bounce = Math.sin(t * 0.08 + i) * 4;
+        ctx.fillStyle = `rgba(255,255,255,${0.85 - i * 0.15})`;
+        ctx.font = `${18 + i * 6}px serif`;
+        ctx.fillText(ch, 430 + i * 16, 250 - i * 18 + bounce);
+    });
+}
+
+function updatePlaying() {
+    frame++;
+    gameSpeed = Math.min(9.5, gameSpeed + 0.0018);
+
+    sheep.update();
+
+    obstacleTimer++;
+    if (obstacleTimer >= nextObstacleInterval) {
+        spawnObstacle();
+        obstacleTimer = 0;
+        nextObstacleInterval = 55 + Math.floor(Math.random() * 85);
+        nextObstacleInterval = Math.max(48, nextObstacleInterval - Math.floor(gameSpeed * 3));
+    }
+
+    hayTimer++;
+    if (hayTimer >= nextHayInterval) {
+        spawnHay();
+        hayTimer = 0;
+        nextHayInterval = 120 + Math.floor(Math.random() * 160);
+    }
+
+    const hb = sheep.hitbox();
+
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+        const o = obstacles[i];
+        o.x -= gameSpeed;
+        if (!o.counted && o.x + o.width < sheep.x) {
+            o.counted = true;
+            passedObstacles++;
+            if (passedObstacles >= CLEAR_GOAL) {
+                gameState = 'CLEAR';
+                clearAnim = 0;
+            }
+        }
+        if (rectsOverlap(hb, o, 2)) {
+            loseLife(o.id);
+        }
+        if (o.x + o.width < -40) obstacles.splice(i, 1);
+    }
+
+    for (let i = hays.length - 1; i >= 0; i--) {
+        const h = hays[i];
+        h.x -= gameSpeed;
+        const hayBox = { x: h.x - 8, y: h.y - 10, width: h.width + 16, height: h.height + 18 };
+        if (rectsOverlap(hb, hayBox, 0)) {
+            if (lives < MAX_LIVES) lives++;
+            burst(h.x + 8, h.y, '#e6c35c');
+            hays.splice(i, 1);
+            continue;
+        }
+        if (h.x + h.width < -20) hays.splice(i, 1);
+    }
+
+    particles.forEach((p) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.08;
+        p.life--;
+    });
+    particles = particles.filter((p) => p.life > 0);
+}
+
+function drawWorldActors() {
+    hays.forEach(drawHay);
+    obstacles.forEach((o) => {
+        if (o.type === 'fence') drawFence(o);
+        else drawCrow(o);
+    });
+    const blinking = gameState === 'PLAYING' && frame < invincibleUntil;
+    drawSheep(sheep.x, sheep.y, { blink: blinking });
+    particles.forEach((p) => {
+        ctx.globalAlpha = Math.max(0, p.life / 28);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, 4, 4);
+        ctx.globalAlpha = 1;
+    });
+}
+
+function drawClearScene() {
+    clearAnim++;
+    const t = Math.min(1, clearAnim / 90);
+
+    ctx.fillStyle = `rgba(255, 244, 196, ${0.15 + t * 0.55})`;
+    ctx.beginPath();
+    ctx.arc(680, 64, 30, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `rgba(26, 39, 68, ${t})`;
+    ctx.beginPath();
+    ctx.arc(694, 54, 22, 0, Math.PI * 2);
+    ctx.fill();
+
+    for (let i = 0; i < 18; i++) {
+        ctx.fillStyle = `rgba(255,255,255,${t * (0.35 + (i % 3) * 0.2)})`;
+        ctx.beginPath();
+        ctx.arc(40 + (i * 97) % 720, 24 + (i * 37) % 90, 1.2 + (i % 2), 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    const walk = Math.min(1, clearAnim / 80);
+    const sx = sheep.x + (310 - sheep.x) * walk;
+    const sy = SHEEP_GROUND_Y;
+    drawFuton(300, GROUND_Y - 20);
+
+    if (walk < 1) {
+        drawSheep(sx, sy, {});
+    } else {
+        const lie = Math.min(1, (clearAnim - 80) / 35);
+        if (lie < 1) {
+            ctx.save();
+            ctx.translate(sx + 24, sy + 36);
+            ctx.rotate(-1.15 * lie);
+            ctx.translate(-(sx + 24), -(sy + 36));
+            drawSheep(sx, sy, {});
+            ctx.restore();
+        } else {
+            drawSheep(328, GROUND_Y - 50, { sleeping: true });
+            drawZzz(clearAnim);
+        }
+    }
+
+    if (clearAnim > 120) {
+        ctx.fillStyle = '#fff8e1';
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 32px sans-serif';
+        ctx.fillText('おやすみ、よく走ったね', canvas.width / 2, 58);
+        ctx.font = '16px sans-serif';
+        ctx.fillText('障害物を50個越えた！  Enterでもう一度', canvas.width / 2, 88);
+    }
+}
+
+function loop() {
+    drawSky();
+    drawBackground();
 
     if (gameState === 'START') {
-        // スタート画面の表示
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '24px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('エンターキーを押してスタート', canvas.width / 2, canvas.height / 2);
-        ctx.font = '16px sans-serif';
-        ctx.fillText('操作: Enterキー でジャンプ', canvas.width / 2, canvas.height / 2 + 40);
-
+        drawSheep(sheep.x, sheep.y);
+        drawHud();
+        drawOverlay('はしる羊', [
+            'Enter でスタート / ジャンプ',
+            '柵とカラスを50個越えたらクリア',
+            '藁を食べるとライフが増える（最大2）'
+        ]);
     } else if (gameState === 'PLAYING') {
-        // スピードをだんだん上げる（時間経過とともに加速）
-        gameSpeed += 0.001;
-
-        // スコア加算
-        score += 1;
-
-        // 羊の更新と描画
-        sheep.update();
-        sheep.draw();
-
-        // 障害物の生成管理
-        obstacleTimer++;
-        if (obstacleTimer >= nextSpawnInterval) {
-            spawnObstacle();
-            obstacleTimer = 0;
-            // 次に柵が出る間隔をランダムに調整（スピードに合わせて少し狭まる）
-            nextSpawnInterval = Math.floor(Math.random() * 60) + Math.max(50, 120 - Math.floor(gameSpeed * 5));
-        }
-
-        // 障害物の更新と描画
-        for (let i = obstacles.length - 1; i >= 0; i--) {
-            obstacles[i].x -= gameSpeed;
-            obstacles[i].draw();
-
-            // 当たり判定
-            if (checkCollision(sheep, obstacles[i])) {
-                gameState = 'GAME_OVER';
-            }
-
-            // 画面外に出た障害物を配列から削除
-            if (obstacles[i].x + obstacles[i].width < 0) {
-                obstacles.splice(i, 1);
-            }
-        }
-
-        // スコアの表示
-        ctx.fillStyle = '#000000';
-        ctx.font = '20px sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText(`スコア: ${Math.floor(score / 10)}`, 20, 30);
-        ctx.fillText(`スピード: ${gameSpeed.toFixed(1)}`, 20, 60);
-
+        updatePlaying();
+        drawWorldActors();
+        drawHud();
     } else if (gameState === 'GAME_OVER') {
-        // 障害物と羊をその場で停止表示
-        sheep.draw();
-        obstacles.forEach(obs => obs.draw());
-
-        // ゲームオーバー画面の表示
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '32px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('ゲームオーバー', canvas.width / 2, canvas.height / 2 - 20);
-        
-        ctx.font = '20px sans-serif';
-        ctx.fillText(`スコア: ${Math.floor(score / 10)}`, canvas.width / 2, canvas.height / 2 + 20);
-        
-        ctx.font = '16px sans-serif';
-        ctx.fillText('もう一度プレイするには Enterキー を押してください', canvas.width / 2, canvas.height / 2 + 60);
+        drawWorldActors();
+        drawHud();
+        drawOverlay('ゲームオーバー', [
+            `越えた数: ${passedObstacles} / ${CLEAR_GOAL}`,
+            'Enter でもう一度'
+        ]);
+    } else if (gameState === 'CLEAR') {
+        drawClearScene();
     }
 
     requestAnimationFrame(loop);
 }
 
-// ループの開始
 loop();
 </script>
-
 </body>
 </html>

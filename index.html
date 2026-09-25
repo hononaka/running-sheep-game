@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>はしる羊</title>
+    <title>Running Sheep</title>
     <style>
         body {
             margin: 0;
@@ -12,14 +12,16 @@
             align-items: center;
             height: 100vh;
             color: #fff;
-            font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+            font-family: Arial, Helvetica, sans-serif;
             overflow: hidden;
         }
         canvas {
             background-color: #7ec0ee;
             box-shadow: 0 0 24px rgba(0, 0, 0, 0.45);
             border-radius: 8px;
-            max-width: min(800px, 96vw);
+            width: min(1100px, 96vw, 184vh);
+            max-width: 96vw;
+            max-height: 92vh;
             height: auto;
         }
     </style>
@@ -33,25 +35,36 @@ const ctx = canvas.getContext('2d');
 const GROUND_Y = 340;
 const CLEAR_GOAL = 50;
 const MAX_LIVES = 2;
+const MAX_SCORE = 100;
+const HAY_POINTS = 10;
+const HIT_PENALTY = 10;
+const FLYING_CROW_SPEED_MULTIPLIER = 1.45;
 const SHEEP_GROUND_Y = GROUND_Y - 46;
 
 let gameState = 'START';
-let lives = 1; // 藁で最大2まで増える
+let lives = 1; // Hay can increase lives up to the maximum.
+let score = 0;
 let passedObstacles = 0;
-let gameSpeed = 4.2;
+let gameSpeed = 6.2;
 let frame = 0;
 let invincibleUntil = 0;
 let obstacleTimer = 0;
-let nextObstacleInterval = 110;
+let nextObstacleInterval = 30;
+let pitTimer = 0;
+let nextPitInterval = 95;
 let hayTimer = 0;
 let nextHayInterval = 140;
 let obstacles = [];
+let pits = [];
 let hays = [];
+let paperScraps = [];
 let clouds = [];
 let hills = [];
 let particles = [];
 let clearAnim = 0;
 let lastHitId = null;
+let audioContext = null;
+let musicTimer = null;
 
 for (let i = 0; i < 5; i++) {
     clouds.push({
@@ -75,9 +88,10 @@ const sheep = {
     width: 52,
     height: 46,
     vy: 0,
-    gravity: 0.62,
-    jumpPower: -12.2,
+    gravity: 1.08,
+    jumpPower: -13.5,
     isJumping: false,
+    jumpCount: 0,
     facing: 1,
 
     hitbox() {
@@ -96,13 +110,15 @@ const sheep = {
             this.y = SHEEP_GROUND_Y;
             this.vy = 0;
             this.isJumping = false;
+            this.jumpCount = 0;
         }
     },
 
     jump() {
-        if (!this.isJumping) {
+        if (this.jumpCount < 2) {
             this.vy = this.jumpPower;
             this.isJumping = true;
+            this.jumpCount++;
         }
     }
 };
@@ -111,17 +127,23 @@ function resetGame() {
     sheep.y = SHEEP_GROUND_Y;
     sheep.vy = 0;
     sheep.isJumping = false;
+    sheep.jumpCount = 0;
     lives = 1;
+    score = 0;
     passedObstacles = 0;
-    gameSpeed = 4.2;
+    gameSpeed = 10.2;
     frame = 0;
     invincibleUntil = 0;
     obstacleTimer = 0;
-    nextObstacleInterval = 110;
+    nextObstacleInterval = 30;
+    pitTimer = 0;
+    nextPitInterval = 95;
     hayTimer = 0;
     nextHayInterval = 140;
     obstacles = [];
+    pits = [];
     hays = [];
+    paperScraps = [];
     particles = [];
     clearAnim = 0;
     lastHitId = null;
@@ -138,37 +160,42 @@ function rectsOverlap(a, b, margin = 0) {
 
 function spawnObstacle() {
     const last = obstacles[obstacles.length - 1];
-    if (last && last.x > canvas.width - 200) return;
-    const isCrow = Math.random() < 0.42;
+    if (last && last.x > canvas.width - 320) return false;
+    const isCrow = Math.random() < 0.62;
     if (isCrow) {
+        const flying = Math.random() < 0.95;
         obstacles.push({
             id: frame + Math.random(),
             type: 'crow',
             x: canvas.width + 20,
-            y: 168 + Math.random() * 36,
+            y: 215 + Math.random() * (GROUND_Y - 48 - 215),
             width: 38,
             height: 24,
             wing: 0,
+            flying,
+            direction: flying ? -1 : 0,
             counted: false
         });
     } else {
         obstacles.push({
             id: frame + Math.random(),
             type: 'fence',
-            x: canvas.width + 10,
+            x: canvas.width + 10 + Math.random() * 28,
             y: GROUND_Y - 48,
             width: 28,
             height: 48,
             counted: false
         });
     }
+    return true;
 }
 
 function spawnHay() {
     const inAir = Math.random() < 0.5;
     const hay = {
+        id: frame + Math.random(),
         x: canvas.width + 16,
-        y: inAir ? 175 + Math.random() * 50 : GROUND_Y - 28,
+        y: inAir ? 220 + Math.random() * 30 : GROUND_Y - 28,
         width: 26,
         height: 18,
         inAir
@@ -177,16 +204,45 @@ function spawnHay() {
     if (!tooClose) hays.push(hay);
 }
 
-function loseLife(obstacleId) {
+function spawnPaperScrap() {
+    const scrap = {
+        id: frame + Math.random(),
+        x: canvas.width + 16,
+        y: Math.random() < 0.5 ? 175 + Math.random() * 50 : GROUND_Y - 28,
+        width: 24,
+        height: 19,
+        rotation: -0.25 + Math.random() * 0.5
+    };
+    const tooClose = obstacles.some((o) => Math.abs(o.x - scrap.x) < 90) ||
+        hays.some((h) => Math.abs(h.x - scrap.x) < 70);
+    if (!tooClose) paperScraps.push(scrap);
+}
+
+function changeScore(amount) {
+    score = Math.max(0, Math.min(MAX_SCORE, score + amount));
+}
+
+function loseLife(obstacleId, scorePenalty = HIT_PENALTY) {
     if (frame < invincibleUntil) return;
     if (lastHitId === obstacleId) return;
     lastHitId = obstacleId;
     lives -= 1;
+    changeScore(-scorePenalty);
     invincibleUntil = frame + 50;
     burst(sheep.x + 20, sheep.y + 16, '#fff');
     if (lives <= 0) {
         lives = 0;
         gameState = 'GAME_OVER';
+        stopMusic();
+    }
+}
+
+function countPassedObstacle() {
+    passedObstacles++;
+    if (passedObstacles >= CLEAR_GOAL) {
+        gameState = 'CLEAR';
+        clearAnim = 0;
+        stopMusic();
     }
 }
 
@@ -208,6 +264,7 @@ window.addEventListener('keydown', (e) => {
     if (gameState === 'START' || gameState === 'GAME_OVER' || gameState === 'CLEAR') {
         resetGame();
         gameState = 'PLAYING';
+        startMusic();
     } else if (gameState === 'PLAYING') {
         sheep.jump();
     }
@@ -216,13 +273,30 @@ window.addEventListener('keydown', (e) => {
 function drawSky() {
     const g = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
     if (gameState === 'CLEAR') {
-        const t = Math.min(1, clearAnim / 80);
-        g.addColorStop(0, mix('#1a2744', '#7ec0ee', 1 - t));
-        g.addColorStop(1, mix('#3d4f7a', '#c9e8ff', 1 - t));
-    } else {
-        g.addColorStop(0, '#7ec0ee');
-        g.addColorStop(1, '#c9e8ff');
+        g.addColorStop(0, '#07152f');
+        g.addColorStop(1, '#1d3155');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (let i = 0; i < 42; i++) {
+            const x = (i * 137) % canvas.width;
+            const y = 18 + (i * 47) % (GROUND_Y - 55);
+            const twinkle = 0.55 + Math.sin(clearAnim * 0.06 + i) * 0.25;
+            ctx.fillStyle = `rgba(255, 250, 210, ${twinkle})`;
+            ctx.beginPath();
+            ctx.arc(x, y, 1 + (i % 3) * 0.45, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        return;
     }
+    const progress = gameState === 'CLEAR'
+        ? 1
+        : Math.min(1, passedObstacles / CLEAR_GOAL);
+    const evening = Math.min(1, progress * 0.9);
+    const top = mix('#7ec0ee', '#f28b6d', evening);
+    const bottom = mix('#c9e8ff', '#ffd39a', evening);
+    g.addColorStop(0, top);
+    g.addColorStop(1, bottom);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
@@ -289,10 +363,33 @@ function drawFence(o) {
     ctx.fillRect(o.x + 2, o.y + 8, 24, 2);
 }
 
+function drawPit(pit) {
+    ctx.fillStyle = '#3a2418';
+    ctx.beginPath();
+    ctx.ellipse(
+        pit.x + pit.width / 2,
+        GROUND_Y + 2,
+        pit.width / 2,
+        9,
+        0,
+        0,
+        Math.PI * 2
+    );
+    ctx.fill();
+    ctx.strokeStyle = '#6d4c35';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(pit.x + pit.width / 2, GROUND_Y + 2, pit.width / 2 - 3, 0, Math.PI);
+    ctx.stroke();
+}
+
 function drawCrow(o) {
-    o.wing = Math.sin(frame * 0.35) * 8;
-    const x = o.x;
-    const y = o.y;
+    o.wing = o.flying ? Math.sin(frame * 0.35) * 8 : 0;
+    ctx.save();
+    ctx.translate(o.x + 19, o.y);
+    ctx.scale(o.direction === 1 ? 1 : -1, 1);
+    const x = -19;
+    const y = 0;
     ctx.fillStyle = '#222';
     ctx.beginPath();
     ctx.ellipse(x + 18, y + 14, 16, 8, 0, 0, Math.PI * 2);
@@ -321,6 +418,7 @@ function drawCrow(o) {
     ctx.beginPath();
     ctx.arc(x + 31.5, y + 11, 1.4, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
 }
 
 function drawHay(h) {
@@ -335,6 +433,32 @@ function drawHay(h) {
     }
     ctx.fillStyle = '#f3d56a';
     ctx.fillRect(-12, -7, 24, 3);
+    ctx.restore();
+}
+
+function drawPaperScrap(s) {
+    ctx.save();
+    ctx.translate(s.x + s.width / 2, s.y + s.height / 2);
+    ctx.rotate(s.rotation);
+    ctx.fillStyle = '#f1eee5';
+    ctx.strokeStyle = '#b8b1a0';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-11, -8);
+    ctx.lineTo(7, -9);
+    ctx.lineTo(11, 1);
+    ctx.lineTo(4, 9);
+    ctx.lineTo(-10, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = '#d4cdbd';
+    ctx.beginPath();
+    ctx.moveTo(-5, -5);
+    ctx.lineTo(5, -2);
+    ctx.moveTo(-7, 1);
+    ctx.lineTo(4, 4);
+    ctx.stroke();
     ctx.restore();
 }
 
@@ -442,9 +566,10 @@ function drawHud() {
     ctx.fillStyle = '#14330c';
     ctx.font = 'bold 18px sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(`越えた数: ${passedObstacles} / ${CLEAR_GOAL}`, 78, 36);
+    ctx.fillText(`Passed: ${passedObstacles} / ${CLEAR_GOAL}`, 78, 36);
+    ctx.fillText(`Score: ${score} / ${MAX_SCORE}`, 78, 60);
     ctx.textAlign = 'right';
-    ctx.fillText(`速さ ${gameSpeed.toFixed(1)}`, canvas.width - 20, 36);
+    ctx.fillText(`Speed ${gameSpeed.toFixed(1)}`, canvas.width - 20, 36);
 }
 
 function drawOverlay(title, lines) {
@@ -496,23 +621,96 @@ function drawZzz(t) {
     });
 }
 
+function drawAurora(t) {
+    const alpha = Math.min(0.75, Math.max(0, (t - 150) / 80));
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = 12;
+    ctx.lineCap = 'round';
+    [
+        ['#7af5d1', 0, 0.8],
+        ['#8aa7ff', 1, 1.4],
+        ['#f09bff', 2, 2.1]
+    ].forEach(([color, index, offset]) => {
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(120, 112 + index * 12);
+        ctx.quadraticCurveTo(290, 30 + Math.sin(t * 0.025 + offset) * 22, 430, 112 + index * 8);
+        ctx.quadraticCurveTo(590, 190 + Math.cos(t * 0.02 + offset) * 20, 760, 90 + index * 15);
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
+function startMusic() {
+    if (musicTimer) return;
+    audioContext = audioContext || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioContext.state === 'suspended') audioContext.resume();
+    const notes = [261.63, 329.63, 392, 329.63, 293.66, 349.23, 440, 349.23];
+    let noteIndex = 0;
+    const playNote = () => {
+        if (!audioContext || gameState !== 'PLAYING') return;
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = 'triangle';
+        oscillator.frequency.value = notes[noteIndex++ % notes.length];
+        gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.045, audioContext.currentTime + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.28);
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + 0.3);
+    };
+    playNote();
+    musicTimer = window.setInterval(playNote, 360);
+}
+
+function stopMusic() {
+    if (musicTimer) {
+        window.clearInterval(musicTimer);
+        musicTimer = null;
+    }
+}
+
 function updatePlaying() {
     frame++;
-    gameSpeed = Math.min(9.5, gameSpeed + 0.0018);
+    gameSpeed = Math.min(15.5, gameSpeed + 0.0028);
 
     sheep.update();
 
     obstacleTimer++;
     if (obstacleTimer >= nextObstacleInterval) {
-        spawnObstacle();
-        obstacleTimer = 0;
-        nextObstacleInterval = 55 + Math.floor(Math.random() * 85);
-        nextObstacleInterval = Math.max(48, nextObstacleInterval - Math.floor(gameSpeed * 3));
+        if (spawnObstacle()) {
+            obstacleTimer = 0;
+            nextObstacleInterval = 32 + Math.floor(Math.random() * 55);
+            nextObstacleInterval = Math.max(28, nextObstacleInterval - Math.floor(gameSpeed * 2));
+        }
+    }
+
+    pitTimer++;
+    if (pitTimer >= nextPitInterval) {
+        const lastObstacle = obstacles[obstacles.length - 1];
+        const pit = {
+            id: frame + Math.random(),
+            x: canvas.width + 20,
+            y: GROUND_Y - 5,
+            width: 48,
+            height: 12
+        };
+        const tooClose = (lastObstacle && lastObstacle.x > canvas.width - 260) ||
+            pits.some((existingPit) => Math.abs(existingPit.x - pit.x) < 130);
+        if (!tooClose) {
+            pits.push(pit);
+            pitTimer = 0;
+            nextPitInterval = 85 + Math.floor(Math.random() * 110);
+        }
     }
 
     hayTimer++;
     if (hayTimer >= nextHayInterval) {
         spawnHay();
+        if (Math.random() < 0.6) spawnPaperScrap();
         hayTimer = 0;
         nextHayInterval = 120 + Math.floor(Math.random() * 160);
     }
@@ -521,19 +719,53 @@ function updatePlaying() {
 
     for (let i = obstacles.length - 1; i >= 0; i--) {
         const o = obstacles[i];
-        o.x -= gameSpeed;
-        if (!o.counted && o.x + o.width < sheep.x) {
+        o.x += o.type === 'crow' && o.flying
+            ? o.direction * gameSpeed * FLYING_CROW_SPEED_MULTIPLIER
+            : -gameSpeed;
+        const passedForward = o.type === 'crow' && o.flying && o.direction === 1
+            ? o.x > sheep.x + sheep.width
+            : o.x + o.width < sheep.x;
+        if (!o.counted && passedForward) {
             o.counted = true;
-            passedObstacles++;
-            if (passedObstacles >= CLEAR_GOAL) {
-                gameState = 'CLEAR';
-                clearAnim = 0;
+            countPassedObstacle();
+        }
+        const sheepBottom = hb.y + hb.height;
+        const isCrowStomp = o.type === 'crow' &&
+            sheep.vy > 0 &&
+            sheepBottom <= o.y + 10 &&
+            rectsOverlap(hb, o, 2);
+        if (isCrowStomp) {
+            if (!o.counted) {
+                o.counted = true;
+                countPassedObstacle();
             }
+            sheep.vy = sheep.jumpPower * 0.7;
+            burst(o.x + o.width / 2, o.y + o.height / 2, '#222');
+            obstacles.splice(i, 1);
+            continue;
         }
         if (rectsOverlap(hb, o, 2)) {
             loseLife(o.id);
         }
-        if (o.x + o.width < -40) obstacles.splice(i, 1);
+        if (o.x + o.width < -40 || o.x > canvas.width + 40) obstacles.splice(i, 1);
+    }
+
+    for (let i = pits.length - 1; i >= 0; i--) {
+        const pit = pits[i];
+        pit.x -= gameSpeed;
+        const pitBox = {
+            x: pit.x,
+            y: GROUND_Y - 8,
+            width: pit.width,
+            height: pit.height + 8
+        };
+        if (!sheep.isJumping && rectsOverlap(hb, pitBox, 0)) {
+            loseLife(pit.id, 0);
+            burst(pit.x + pit.width / 2, GROUND_Y, '#8d6e63');
+            pits.splice(i, 1);
+            continue;
+        }
+        if (pit.x + pit.width < -20) pits.splice(i, 1);
     }
 
     for (let i = hays.length - 1; i >= 0; i--) {
@@ -542,11 +774,30 @@ function updatePlaying() {
         const hayBox = { x: h.x - 8, y: h.y - 10, width: h.width + 16, height: h.height + 18 };
         if (rectsOverlap(hb, hayBox, 0)) {
             if (lives < MAX_LIVES) lives++;
+            changeScore(HAY_POINTS);
             burst(h.x + 8, h.y, '#e6c35c');
             hays.splice(i, 1);
             continue;
         }
         if (h.x + h.width < -20) hays.splice(i, 1);
+    }
+
+    for (let i = paperScraps.length - 1; i >= 0; i--) {
+        const scrap = paperScraps[i];
+        scrap.x -= gameSpeed;
+        const scrapBox = {
+            x: scrap.x - 8,
+            y: scrap.y - 10,
+            width: scrap.width + 16,
+            height: scrap.height + 18
+        };
+        if (rectsOverlap(hb, scrapBox, 0)) {
+            loseLife(scrap.id);
+            burst(scrap.x + 10, scrap.y, '#f1eee5');
+            paperScraps.splice(i, 1);
+            continue;
+        }
+        if (scrap.x + scrap.width < -20) paperScraps.splice(i, 1);
     }
 
     particles.forEach((p) => {
@@ -559,7 +810,9 @@ function updatePlaying() {
 }
 
 function drawWorldActors() {
+    pits.forEach(drawPit);
     hays.forEach(drawHay);
+    paperScraps.forEach(drawPaperScrap);
     obstacles.forEach((o) => {
         if (o.type === 'fence') drawFence(o);
         else drawCrow(o);
@@ -617,12 +870,19 @@ function drawClearScene() {
     }
 
     if (clearAnim > 120) {
+        if (score >= MAX_SCORE) drawAurora(clearAnim);
         ctx.fillStyle = '#fff8e1';
         ctx.textAlign = 'center';
         ctx.font = 'bold 32px sans-serif';
-        ctx.fillText('おやすみ、よく走ったね', canvas.width / 2, 58);
+        ctx.fillText('Good night, great run!', canvas.width / 2, 58);
         ctx.font = '16px sans-serif';
-        ctx.fillText('障害物を50個越えた！  Enterでもう一度', canvas.width / 2, 88);
+        ctx.fillText(
+            score >= MAX_SCORE
+                ? `Perfect score: ${MAX_SCORE}!  Press Enter to play again`
+                : `Score: ${score} / ${MAX_SCORE}  Press Enter to play again`,
+            canvas.width / 2,
+            88
+        );
     }
 }
 
@@ -633,10 +893,10 @@ function loop() {
     if (gameState === 'START') {
         drawSheep(sheep.x, sheep.y);
         drawHud();
-        drawOverlay('はしる羊', [
-            'Enter でスタート / ジャンプ',
-            '柵とカラスを50個越えたらクリア',
-            '藁を食べるとライフが増える（最大2）'
+        drawOverlay('Running Sheep', [
+            'Press Enter to start / jump',
+            `Pass ${CLEAR_GOAL} fences or crows to reach the goal`,
+            'Hay restores lives and adds points; paper scraps reduce them'
         ]);
     } else if (gameState === 'PLAYING') {
         updatePlaying();
@@ -645,9 +905,10 @@ function loop() {
     } else if (gameState === 'GAME_OVER') {
         drawWorldActors();
         drawHud();
-        drawOverlay('ゲームオーバー', [
-            `越えた数: ${passedObstacles} / ${CLEAR_GOAL}`,
-            'Enter でもう一度'
+        drawOverlay('Game Over', [
+            `Passed: ${passedObstacles} / ${CLEAR_GOAL}`,
+            `Score: ${score} / ${MAX_SCORE}`,
+            'Press Enter to play again'
         ]);
     } else if (gameState === 'CLEAR') {
         drawClearScene();

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
     <title>Running Sheep</title>
     <style>
         body {
@@ -10,6 +11,7 @@
             display: flex;
             justify-content: center;
             align-items: center;
+            width: 100vw;
             height: 100vh;
             color: #fff;
             font-family: Arial, Helvetica, sans-serif;
@@ -19,10 +21,18 @@
             background-color: #7ec0ee;
             box-shadow: 0 0 24px rgba(0, 0, 0, 0.45);
             border-radius: 8px;
-            width: min(1100px, 96vw, 184vh);
-            max-width: 96vw;
-            max-height: 92vh;
-            height: auto;
+            width: 100vw;
+            height: 100vh;
+            max-width: none;
+            max-height: none;
+            touch-action: none;
+        }
+        @media (min-width: 769px) {
+            canvas {
+                width: min(100vw, 160vh);
+                height: auto;
+                max-height: 80vh;
+            }
         }
     </style>
 </head>
@@ -32,12 +42,15 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-const GROUND_Y = 340;
+const MOBILE_LAYOUT = window.matchMedia('(max-width: 768px)').matches ||
+    'ontouchstart' in window;
+const GROUND_Y = MOBILE_LAYOUT ? 315 : 340;
 const CLEAR_GOAL = 50;
 const MAX_LIVES = 2;
 const MAX_SCORE = 100;
 const HAY_POINTS = 10;
-const HIT_PENALTY = 10;
+const CROW_POINTS = 5;
+const HIT_PENALTY = 5;
 const FLYING_CROW_SPEED_MULTIPLIER = 1.45;
 const SHEEP_GROUND_Y = GROUND_Y - 46;
 
@@ -45,6 +58,7 @@ let gameState = 'START';
 let lives = 1; // Hay can increase lives up to the maximum.
 let score = 0;
 let passedObstacles = 0;
+let backgroundProgress = 0;
 let gameSpeed = 6.2;
 let frame = 0;
 let invincibleUntil = 0;
@@ -67,6 +81,9 @@ let lastHitId = null;
 let rankingSaved = false;
 let audioContext = null;
 let musicTimer = null;
+let goalMusicTimer = null;
+let orientationNotice = false;
+let deathPit = null;
 
 for (let i = 0; i < 5; i++) {
     clouds.push({
@@ -77,12 +94,12 @@ for (let i = 0; i < 5; i++) {
     });
 }
 let hillX = 0;
-for (let i = 0; i < 8; i++) {
-    hillX += 140 + Math.random() * 80;
+for (let i = 0; i < 7; i++) {
+    hillX += 250 + Math.random() * 100;
     hills.push({
         x: hillX,
-        w: 180 + Math.random() * 130,
-        h: 42 + Math.random() * 42
+        w: 180 + Math.random() * 100,
+        h: 52 + Math.random() * 42
     });
 }
 
@@ -123,11 +140,13 @@ const sheep = {
             this.vy = this.jumpPower;
             this.isJumping = true;
             this.jumpCount++;
+            playEffect(440, 0.12, 'sine', 0.08);
         }
     }
 };
 
 function resetGame() {
+    stopGoalMusic();
     sheep.y = SHEEP_GROUND_Y;
     sheep.vy = 0;
     sheep.isJumping = false;
@@ -135,6 +154,7 @@ function resetGame() {
     lives = 1;
     score = 0;
     passedObstacles = 0;
+    backgroundProgress = 0;
     gameSpeed = 7.2;
     frame = 0;
     invincibleUntil = 0;
@@ -153,6 +173,7 @@ function resetGame() {
     gameOverAnim = 0;
     lastHitId = null;
     rankingSaved = false;
+    deathPit = null;
 }
 
 function rectsOverlap(a, b, margin = 0) {
@@ -165,6 +186,7 @@ function rectsOverlap(a, b, margin = 0) {
 }
 
 function spawnObstacle() {
+    if (passedObstacles >= CLEAR_GOAL) return false;
     const last = obstacles[obstacles.length - 1];
     if (last && last.x > canvas.width - 320) return false;
     const isCrow = Math.random() < 0.62;
@@ -225,7 +247,7 @@ function spawnPaperScrap() {
 }
 
 function changeScore(amount) {
-    score = Math.max(0, Math.min(MAX_SCORE, score + amount));
+    score = Math.max(0, score + amount);
 }
 
 function loseLife(obstacleId, scorePenalty = HIT_PENALTY) {
@@ -234,6 +256,7 @@ function loseLife(obstacleId, scorePenalty = HIT_PENALTY) {
     lastHitId = obstacleId;
     lives -= 1;
     changeScore(-scorePenalty);
+    playDamageSound();
     invincibleUntil = frame + 50;
     burst(sheep.x + 20, sheep.y + 16, '#fff');
     if (lives <= 0) {
@@ -250,9 +273,87 @@ function countPassedObstacle() {
     if (passedObstacles >= CLEAR_GOAL) {
         gameState = 'CLEAR';
         clearAnim = 0;
+        obstacles = [];
+        pits = [];
+        hays = [];
+        paperScraps = [];
         saveScoreRanking(score);
+        playSleepSound();
         stopMusic();
+        startGoalMusic();
     }
+}
+
+function playEffect(frequency, duration, type = 'sine', volume = 0.08) {
+    if (!audioContext) return;
+    if (audioContext.state === 'suspended') audioContext.resume();
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(volume, audioContext.currentTime + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + duration);
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + duration + 0.02);
+}
+
+function playCrowStompSound() {
+    playEffect(520, 0.12, 'sine', 0.07);
+    window.setTimeout(() => playEffect(380, 0.16, 'sine', 0.055), 70);
+}
+
+function playDamageSound() {
+    playEffect(105, 0.16, 'square', 0.07);
+    window.setTimeout(() => playEffect(72, 0.2, 'square', 0.055), 65);
+}
+
+function playSleepSound() {
+    if (!ensureAudio()) return;
+    playEffect(196, 0.35, 'sine', 0.045);
+    window.setTimeout(() => playEffect(146.83, 0.45, 'sine', 0.035), 320);
+    window.setTimeout(() => playEffect(110, 0.7, 'sine', 0.025), 760);
+}
+
+function startGoalMusic() {
+    if (goalMusicTimer || !ensureAudio()) return;
+    const notes = [392, 523.25, 659.25, 523.25, 440, 587.33, 698.46, 587.33];
+    let noteIndex = 0;
+    const playNote = () => {
+        if (!audioContext || gameState !== 'CLEAR') return;
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = notes[noteIndex++ % notes.length];
+        gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.035, audioContext.currentTime + 0.08);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.75);
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + 0.8);
+    };
+    playNote();
+    goalMusicTimer = window.setInterval(playNote, 820);
+}
+
+function stopGoalMusic() {
+    if (goalMusicTimer) {
+        window.clearInterval(goalMusicTimer);
+        goalMusicTimer = null;
+    }
+}
+
+function ensureAudio() {
+    if (!audioContext) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return false;
+        audioContext = new AudioContext();
+    }
+    if (audioContext.state === 'suspended') audioContext.resume();
+    return true;
 }
 
 function saveScoreRanking(value) {
@@ -293,14 +394,24 @@ function burst(x, y, color) {
             color
         });
     }
+
+}
+
+function requestLandscape() {
+    if (!screen.orientation || !screen.orientation.lock) return;
+    screen.orientation.lock('landscape').catch(() => {
+        orientationNotice = true;
+    });
 }
 
 window.addEventListener('keydown', (e) => {
     if (e.code !== 'Enter') return;
     e.preventDefault();
+    if (gameState === 'CLEAR' && clearAnim < 120) return;
     if (gameState === 'START' || gameState === 'GAME_OVER' || gameState === 'CLEAR') {
         resetGame();
         gameState = 'PLAYING';
+        requestLandscape();
         startMusic();
     } else if (gameState === 'PLAYING') {
         sheep.jump();
@@ -309,9 +420,11 @@ window.addEventListener('keydown', (e) => {
 
 canvas.addEventListener('touchstart', (e) => {
     e.preventDefault();
+    if (gameState === 'CLEAR' && clearAnim < 120) return;
     if (gameState === 'START' || gameState === 'GAME_OVER' || gameState === 'CLEAR') {
         resetGame();
         gameState = 'PLAYING';
+        requestLandscape();
         startMusic();
     } else if (gameState === 'PLAYING') {
         sheep.jump();
@@ -320,33 +433,29 @@ canvas.addEventListener('touchstart', (e) => {
 
 function drawSky() {
     const g = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
-    if (gameState === 'CLEAR') {
-        g.addColorStop(0, '#07152f');
-        g.addColorStop(1, '#1d3155');
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const progress = backgroundProgress;
+    const eveningProgress = smoothstep(progress);
+    const top = mix('#7ec0ee', '#f29a70', eveningProgress);
+    const bottom = mix('#c9e8ff', '#ffd39a', eveningProgress);
+    g.addColorStop(0, top);
+    g.addColorStop(1, bottom);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    if (gameState === 'CLEAR') {
+        const nightProgress = smoothstep(Math.max(0, (clearAnim - 90) / 150));
+        ctx.fillStyle = `rgba(7, 21, 47, ${nightProgress * 0.82})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         for (let i = 0; i < 42; i++) {
             const x = (i * 137) % canvas.width;
             const y = 18 + (i * 47) % (GROUND_Y - 55);
-            const twinkle = 0.55 + Math.sin(clearAnim * 0.06 + i) * 0.25;
+            const twinkle = nightProgress * (0.55 + Math.sin(clearAnim * 0.06 + i) * 0.25);
             ctx.fillStyle = `rgba(255, 250, 210, ${twinkle})`;
             ctx.beginPath();
             ctx.arc(x, y, 1 + (i % 3) * 0.45, 0, Math.PI * 2);
             ctx.fill();
         }
-        return;
     }
-    const progress = gameState === 'CLEAR'
-        ? 1
-        : Math.min(1, passedObstacles / CLEAR_GOAL);
-    const evening = Math.min(1, progress * 0.9);
-    const top = mix('#7ec0ee', '#f28b6d', evening);
-    const bottom = mix('#c9e8ff', '#ffd39a', evening);
-    g.addColorStop(0, top);
-    g.addColorStop(1, bottom);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
 function mix(a, b, t) {
@@ -358,6 +467,11 @@ function mix(a, b, t) {
     return `rgb(${r},${g},${bl})`;
 }
 
+function smoothstep(t) {
+    const clamped = Math.max(0, Math.min(1, t));
+    return clamped * clamped * (3 - 2 * clamped);
+}
+
 function hexToRgb(hex) {
     const n = parseInt(hex.slice(1), 16);
     return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
@@ -365,18 +479,16 @@ function hexToRgb(hex) {
 
 function drawBackground() {
     const scroll = gameState === 'PLAYING' ? frame * gameSpeed * 0.15 : 0;
-    const hillWorldWidth = 1700;
+    const hillWorldWidth = 2400;
     hills.forEach((h, i) => {
         const x = ((h.x - scroll * (0.35 + i * 0.02)) % hillWorldWidth + hillWorldWidth) % hillWorldWidth - 100;
-        ctx.fillStyle = i % 2 === 0 ? '#6aa84f' : '#5c9a45';
-        ctx.beginPath();
-        ctx.ellipse(x + h.w / 2, GROUND_Y + 10, h.w / 2, h.h, 0, Math.PI, 0);
-        ctx.fill();
-        if (x + h.w < canvas.width) {
+        [-hillWorldWidth, 0, hillWorldWidth].forEach((offset) => {
+            const hillX = x + offset;
+            ctx.fillStyle = i % 2 === 0 ? '#6aa84f' : '#5c9a45';
             ctx.beginPath();
-            ctx.ellipse(x + hillWorldWidth + h.w / 2, GROUND_Y + 10, h.w / 2, h.h, 0, Math.PI, 0);
+            ctx.ellipse(hillX + h.w / 2, GROUND_Y + 10, h.w / 2, h.h, 0, Math.PI, 0);
             ctx.fill();
-        }
+        });
     });
 
     clouds.forEach((c) => {
@@ -632,7 +744,7 @@ function drawHud() {
     ctx.font = 'bold 18px sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText(`Passed: ${passedObstacles} / ${CLEAR_GOAL}`, 78, 36);
-    ctx.fillText(`Score: ${score} / ${MAX_SCORE}`, 78, 60);
+    ctx.fillText(`Score: ${score} (Target: ${MAX_SCORE})`, 78, 60);
     ctx.textAlign = 'right';
     ctx.fillText(`Speed ${gameSpeed.toFixed(1)}`, canvas.width - 20, 36);
 }
@@ -733,8 +845,7 @@ function drawAurora(t) {
 
 function startMusic() {
     if (musicTimer) return;
-    audioContext = audioContext || new (window.AudioContext || window.webkitAudioContext)();
-    if (audioContext.state === 'suspended') audioContext.resume();
+    if (!ensureAudio()) return;
     const notes = [261.63, 329.63, 392, 329.63, 293.66, 349.23, 440, 349.23];
     let noteIndex = 0;
     const playNote = () => {
@@ -764,7 +875,10 @@ function stopMusic() {
 
 function updatePlaying() {
     frame++;
-    gameSpeed = Math.min(15.5, gameSpeed + 0.0028);
+    const acceleration = gameSpeed >= 10 ? 0.0028 * (2 / 3) : 0.0028;
+    gameSpeed = Math.min(15.5, gameSpeed + acceleration);
+    const targetBackgroundProgress = Math.min(1, passedObstacles / CLEAR_GOAL);
+    backgroundProgress += (targetBackgroundProgress - backgroundProgress) * 0.035;
 
     sheep.update();
 
@@ -818,12 +932,20 @@ function updatePlaying() {
             o.counted = true;
             countPassedObstacle();
         }
-        const sheepBottom = hb.y + hb.height;
+        const footBox = {
+            x: sheep.x + 8,
+            y: sheep.y + sheep.height - 12,
+            width: sheep.width - 16,
+            height: 12
+        };
         const isCrowStomp = o.type === 'crow' &&
             sheep.vy > 0 &&
-            sheepBottom <= o.y + 10 &&
-            rectsOverlap(hb, o, 2);
+            footBox.y + footBox.height >= o.y &&
+            footBox.y < o.y + o.height &&
+            rectsOverlap(footBox, o, 2);
         if (isCrowStomp) {
+            changeScore(CROW_POINTS);
+            playCrowStompSound();
             if (!o.counted) {
                 o.counted = true;
                 countPassedObstacle();
@@ -849,9 +971,10 @@ function updatePlaying() {
             height: pit.height + 8
         };
         if (!sheep.isJumping && rectsOverlap(hb, pitBox, 0)) {
-            loseLife(pit.id, 0);
+            loseLife(pit.id);
             burst(pit.x + pit.width / 2, GROUND_Y, '#8d6e63');
-            pits.splice(i, 1);
+            deathPit = pit;
+            pit.falling = true;
             continue;
         }
         if (pit.x + pit.width < -20) pits.splice(i, 1);
@@ -932,8 +1055,23 @@ function drawFallenSheep() {
     ctx.restore();
 }
 
+function drawOrientationNotice() {
+    if (!orientationNotice || window.innerWidth >= window.innerHeight) return;
+    ctx.fillStyle = 'rgba(8, 15, 30, 0.82)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillText('Rotate your phone', canvas.width / 2, canvas.height / 2 - 12);
+    ctx.font = '16px sans-serif';
+    ctx.fillText('Landscape mode is recommended', canvas.width / 2, canvas.height / 2 + 20);
+}
+
 function drawClearScene() {
     clearAnim++;
+    backgroundProgress += (1 - backgroundProgress) * 0.012;
+    drawSky();
+    drawBackground();
     const t = Math.min(1, clearAnim / 90);
 
     ctx.fillStyle = `rgba(255, 244, 196, ${0.15 + t * 0.55})`;
@@ -982,9 +1120,7 @@ function drawClearScene() {
         ctx.fillText('Good night, great run!', canvas.width / 2, 34);
         ctx.font = '16px sans-serif';
         ctx.fillText(
-            score >= MAX_SCORE
-                ? `Perfect score: ${MAX_SCORE}!  Press Enter to play again`
-                : `Score: ${score} / ${MAX_SCORE}  Press Enter to play again`,
+            `Score: ${score} (Target: ${MAX_SCORE})  Press Enter to play again`,
             canvas.width / 2,
             61
         );
@@ -993,8 +1129,12 @@ function drawClearScene() {
 }
 
 function loop() {
-    drawSky();
-    drawBackground();
+    if (gameState === 'CLEAR') {
+        drawClearScene();
+    } else {
+        drawSky();
+        drawBackground();
+    }
 
     if (gameState === 'START') {
         drawSheep(sheep.x, sheep.y);
@@ -1003,25 +1143,28 @@ function loop() {
             '1: Press Enter or touch to jump',
             '2: Press Enter or touch again for a double jump',
             '3: You can stomp crows to defeat them',
-            'Pass fences and pits, collect hay, and avoid paper scraps'
+            'Pass fences and pits, and collect hay'
         ]);
     } else if (gameState === 'PLAYING') {
         updatePlaying();
         drawWorldActors();
         drawHud();
     } else if (gameState === 'GAME_OVER') {
+        drawSky();
+        drawBackground();
+        if (deathPit) drawPit(deathPit);
         updateGameOver();
         drawFallenSheep();
         if (gameOverAnim > 42) {
             drawOverlay('Game Over', [
                 `Passed: ${passedObstacles} / ${CLEAR_GOAL}`,
-                `Score: ${score} / ${MAX_SCORE}`,
+                `Score: ${score} (Target: ${MAX_SCORE})`,
                 'Press Enter to start again'
             ]);
         }
-    } else if (gameState === 'CLEAR') {
-        drawClearScene();
     }
+
+    drawOrientationNotice();
 
     requestAnimationFrame(loop);
 }

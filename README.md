@@ -1,14 +1,16 @@
-# はしる羊
+# Running Sheep
 
-Enterキーだけで遊ぶランゲームです。`index.html` をブラウザで開いてください。
+An endless runner controlled with the Enter key or touch input. Open `index.html` in a browser to play.
 
-- 羊は自動で走り、だんだん速くなります
-- Enter でジャンプ
-- 柵・カラス・丸めた紙屑に触れるとライフとポイントが減り、0になるとゲームオーバー
-- 地面や空中の藁を食べるとライフ（最大2）と10ポイントが増えます
-- カラスの高さ、柵、藁、紙屑はランダムに出現します
-- 柵とカラスは同じ出現タイミングからランダムに選ばれ、飛来カラスは羊より速く飛びます
-- 地面の落とし穴はランダムに出現し、ジャンプで避けられます（ポイント・越えた数には影響しません）
-- 障害物を50個越えるとゴールし、羊が布団で眠ります
-- 100ポイント満点でゴールすると、眠った羊の上にオーロラが現れます
-- ゴールに近づくほど背景が朝から夕方に変わり、ゲーム中は牧場風の音楽が流れます
+- The sheep runs automatically and gradually accelerates.
+- Press Enter or touch the game screen to jump; press or touch again in midair for a double jump.
+- Touching fences, crows, or rolled-up paper scraps reduces lives and points. The game ends when lives reach zero.
+- Stomping a crow defeats it without reducing lives or points.
+- Collecting hay restores a life up to the maximum and adds 10 points.
+- Crows, fences, hay, paper scraps, and pits appear at random.
+- Pits can be avoided by jumping and do not affect points or the passed-obstacle count.
+- Reach the goal by passing 50 fences or crows; the sheep then sleeps on a futon.
+- Reaching the goal with a perfect score of 100 displays an aurora above the sleeping sheep.
+- The goal screen saves the score locally and displays a top-five ranking.
+- Mountains use varied widths and spacing for a more natural background.
+- The background changes from morning to evening as the goal approaches, and cheerful ranch music plays during the game.
